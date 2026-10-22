@@ -343,6 +343,14 @@ h2{margin:4px 0 8px;font-size:24px;font-weight:800}
 .ppath .pcard{flex-direction:column}
 .ib.cc.rn{touch-action:none;cursor:grab}
 .ib.cc.rn.sel{border-color:var(--c);box-shadow:0 0 0 2px var(--c),0 0 18px var(--c)}
+/* Progressions and scales: up to 9 choices, so a wider panel keeps them on one row, the network shrinks on short screens,
+   and the stage scrolls (instead of hiding the bottom buttons) if it still does not fit */
+#game.prog .stage{display:flex;flex-direction:column;overflow-y:auto;place-items:initial}
+#game.prog .panel{margin:auto;width:min(820px,100%)}
+#game.prog .iansw.chords{grid-template-columns:repeat(auto-fit,minmax(88px,1fr))}
+#game.prog .ib.cc{padding:10px 4px}
+#game.prog .cnet{height:clamp(120px,24vh,260px)}
+@media (max-width:520px){#game.prog .stage{padding:170px 12px 104px}#game.prog .cnet{height:clamp(90px,15vh,150px)}#game.prog .iansw.chords{grid-template-columns:repeat(auto-fit,minmax(70px,1fr))}#game.prog .ib.cc{padding:8px 2px}#game.prog .ib.cc small{font-size:9px;letter-spacing:0}}
 .p-ghost{position:fixed;z-index:50;pointer-events:none;transform:translate(-50%,-60%);padding:12px 18px;border-radius:14px;font:800 22px Inter,sans-serif;color:#fff;background:color-mix(in srgb,var(--c) 40%,#0b1226);border:2px solid var(--c);box-shadow:0 0 24px var(--c)}
 #b-psub:not(:disabled){border-color:var(--ok);box-shadow:0 0 18px #48e0c855}
 .ib.cc.rn{font-size:20px}
@@ -376,6 +384,8 @@ h2{margin:4px 0 8px;font-size:24px;font-weight:800}
 .sr-rep i.x{background:#26304f;box-shadow:none}
 .sr-rep:disabled{opacity:.4}
 .sr-exit{position:absolute;left:50%;transform:translateX(-50%);bottom:14px}
+.sr-fx{position:absolute;right:14px;bottom:14px}
+.sr-fx[aria-pressed="false"]{opacity:.75}
 @media (max-width:520px){.sr-hud{top:104px}.sr-big{min-width:110px;padding:14px}}
 /* Tuner redesign: mode choice, string chips, three steps */
 #tn-modes h2{margin:4px 0 12px}
@@ -601,10 +611,11 @@ h2{margin:4px 0 8px;font-size:24px;font-weight:800}
   <div class="sr-pass" id="sr-pass" aria-live="polite"></div>
   <div class="sr-ctrl">
     <button class="sr-big" type="button" id="sr-flat" disabled>▼ FLAT<small>↓ lower</small></button>
-    <button class="sr-rep" type="button" id="sr-rep" disabled>↻ Replay <span id="sr-reps"></span></button>
+    <button class="sr-rep" type="button" id="sr-rep" disabled title="Hear it again (Space)">↻ Replay <span id="sr-reps"></span></button>
     <button class="sr-big" type="button" id="sr-sharp" disabled>▲ SHARP<small>↑ higher</small></button>
   </div>
   <button class="ghost sr-exit" type="button" id="sr-exit">Quit</button>
+  <button class="ghost sr-fx" type="button" id="sr-fx" aria-pressed="true" title="Turn the moving tunnel off if the game feels slow (key V)">🎨 Visuals: On</button>
 </section>
 
 <!-- end -->
@@ -669,7 +680,7 @@ h2{margin:4px 0 8px;font-size:24px;font-weight:800}
 (function () {
   const FIREBASE = { apiKey: 'AIzaSyDU9vbCWJ4yWuD8bAX984DmQF4dvo13BHs', authDomain: 'rhythm-trainer-fc313.firebaseapp.com', projectId: 'rhythm-trainer-fc313', appId: '1:956677028482:web:c3ec72a279e61b6f6c929b' };
   const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/', HUB = '../';
-  const GAME_NAMES = { scale: 'Scale Quest', tidal: 'Tidal Tones', rooftop: 'Rooftop Runner', rhythm: 'The Big Score', earshot: 'Earshot Saloon', synapse: 'Brainwaves: Sharp or Flat?' };
+  const GAME_NAMES = { scale: 'Scale Quest', tidal: 'Tidal Tones', rooftop: 'Rooftop Runner', rhythm: 'The Big Score', earshot: 'Earshot Saloon', synapse: 'Brainwaves' };
   const T = { active: false, allow: false, running: false, cfg: null, id: null, doc: null, result: null, heard: false };
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const q = new URLSearchParams(location.search);
@@ -1055,6 +1066,46 @@ const MTG_HIST = (() => {
     },
   };
 })();
+
+/* ---------- daily practice record for the teacher (brainwaves_progress/<class>_<date>_<sid>), like tidal_progress ----------
+   Every answer in any brain area is added to today's summary (kept in localStorage bw_day_v1): answers, right, minutes and
+   by_area { <area id>: [right, answers] }. It is sent at most once a minute (and when the page is hidden) to the active
+   class, if it has a teacher, so the dashboard's Grades and Progress views can count Brainwaves. */
+const BWDAY = (() => {
+  const KEY = 'bw_day_v1', day = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const tracked = () => { const p = getProfile(); return p && classesOf(p).some(c => c.owner) ? p : null; };
+  const codes = p => classesOf(p).map(c => c.code).join(',');
+  function read() {
+    const p = tracked(); if (!p) return null;
+    let d = null; try { d = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch {}
+    if (!d || d.date !== day() || d.sid !== sidOf(p) || d.code !== codes(p)) d = { date: day(), sid: sidOf(p), code: codes(p), answers: 0, correct: 0, ms: 0, first: 0, last: 0, by_area: {} };
+    return d;
+  }
+  let timer = 0, lastSync = 0;
+  async function sync() {
+    clearTimeout(timer);
+    const p = tracked(), d = read(); if (!p || !d || !d.answers) return;
+    const base = { date: d.date, sid: d.sid, student: displayName(p), answers: d.answers, correct: d.correct, minutes: Math.max(1, Math.round(d.ms / 60000)), first_at: d.first, last_at: d.last, by_area: d.by_area };
+    try {
+      const { fs, db } = await fb();
+      await wait(Promise.all(classesOf(p).filter(c => c.owner).map(c => fs.setDoc(fs.doc(db, 'brainwaves_progress', `${c.code}_${d.date}_${d.sid}`), { class_code: c.code, owner: c.owner, ...base, updated_at: fs.serverTimestamp() }))));
+    } catch (e) { console.warn('Progress sync failed:', e); }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) sync(); });
+  return {
+    note(area, ok) {
+      const d = read(); if (!d) return;
+      const now = Date.now();
+      if (d.last && now - d.last <= 600000) d.ms += now - d.last;   // gaps over 10 minutes don't count as practice
+      d.first = d.first || now; d.last = now; d.answers++; if (ok) d.correct++;
+      const a = d.by_area[area] || (d.by_area[area] = [0, 0]); a[1]++; if (ok) a[0]++;
+      try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {}
+      clearTimeout(timer); timer = setTimeout(() => { lastSync = Date.now(); sync(); }, Math.max(2000, lastSync + 60000 - Date.now()));   // at most one save a minute
+    },
+    sync,
+  };
+})();
+{ const note = MTG_HIST.note; MTG_HIST.note = (game, labels, ok) => { note(game, labels, ok); BWDAY.note(game, ok); }; }   // every answer also goes into the teacher's daily record
 
 
 /* =====================================================================
@@ -1498,6 +1549,7 @@ const Web = (() => {
 
   function frame(ms) {
     requestAnimationFrame(frame);
+    if (!document.getElementById('srun').hidden && !resolve) return;   // hidden behind the Sharp or Flat? tunnel: skip the work (slow Chromebooks)
     const t = ms / 1000;
     if (resolve || u !== to) {
       const k = Math.min(1, (performance.now() - t0) / (dur * 1000)); u = from + (to - from) * k;
@@ -1649,8 +1701,10 @@ async function goHome() {
 async function enterRegion(i) {
   if (S.busy) return; const r = REGIONS[i];
   if (!r.ready) { toast(`${r.game} is coming soon.`); return; }
-  if (window.MTGTest && MTGTest.active && r.id !== 'synapse') { toast('This test is for the Sharp or Flat? game.'); return; }
-  ac(); S.busy = true; S.region = i; S.mode = r.id === 'tuner' ? 'wall' : 'ladder'; S.practiceFloor = 0; S.sel = r.id === 'tuner' ? 0 : r.id === 'synapse' && S.startFloor > 0 ? S.startFloor : openLevel();
+  const ti = S.teach ? S.teach.region : 0;   // a test only opens its own area
+  if (window.MTGTest && MTGTest.active && i !== ti) { toast(`This test is for the ${REGIONS[ti].game} game.`); return; }
+  const tf = S.teach && S.teach.region === i ? S.teach.floor : null;   // a teacher's starting level for this area
+  ac(); S.busy = true; S.region = i; S.mode = r.id === 'tuner' ? 'wall' : 'ladder'; S.practiceFloor = tf || 0; S.sel = r.id === 'tuner' ? 0 : tf != null ? tf : openLevel();
   show(null); Web.accent(r.color); Web.lit([i], i);
   await Web.go('micro', { floor: i, dur: 1.9 }); S.busy = false; if (r.id === 'tuner') showWall(); else showLadder();
 }
@@ -1720,7 +1774,7 @@ function drawLadder() {
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = out.join('');
 }
 function selUI() {
-  const f = LV()[S.sel], done = doneArr(), cur = openLevel(), locked = !done[S.sel] && S.sel > cur, el = $('lad-sel');
+  const f = LV()[S.sel], done = doneArr(), cur = openLevel(), tl = S.teach && S.teach.region === S.region && S.teach.floor != null ? S.teach.floor : -1, locked = !done[S.sel] && S.sel > cur && S.sel > tl, el = $('lad-sel');   // the teacher's starting level (and below) is open
   el.style.setProperty('--lc', f.color);
   el.innerHTML = `<b>Level ${S.sel + 1}: ${f.name}</b><span class="c">${f.sub}${isV() ? '' : ` · ×${f.mult} points`}</span>${done[S.sel] ? ' Done. Run it again to beat your score.' : locked ? ' Finish the earlier levels to unlock this one. You can still practice it.' : ` ${isV() ? 'Lock in seven notes' : PER() === 7 ? 'Seven rounds' : 'Ten rounds'} to climb to the next level.`}`;
   $('go-run').disabled = locked; $('go-run').textContent = locked ? 'Locked' : S.sel > 0 || done[0] ? `Start run at level ${S.sel + 1}` : 'Start run';
@@ -2029,26 +2083,39 @@ async function drawBoard() {
   } catch (e) { if (tok === boardTok) $('lb').innerHTML = "<li><span></span><span>Couldn't load the board. Check your internet connection.</span><span></span><span></span></li>"; }
 }
 
-/* ---------- teacher-assigned settings: ?settings=<base64url JSON> (floor 1-6 to start on) ---------- */
+/* ---------- teacher-assigned settings: ?settings=<base64url JSON> { area: a REGIONS id ('' = any area: the whole brain; missing = synapse, as in older tests),
+   floor (Sharp or Flat?) or lv_<area> (the others): the level to start on, 1 to the area's level count } ---------- */
 function applySettingsFromUrl() {
   const q = new URLSearchParams(location.search), raw = q.get('settings'); if (raw == null) return null;
   q.delete('settings'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
   let d = null;
   try { let b = raw.replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; d = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b), c => c.charCodeAt(0)))); } catch { return null; }
-  if (!d || typeof d !== 'object') return null;
-  const fl = parseInt(d.floor, 10);
-  if (fl >= 1 && fl <= LV().length) { S.startFloor = fl - 1; S.practiceFloor = fl - 1; toast(`Your teacher set the starting level: ${LV()[fl - 1].name}.`, 5000); return new Set(['floor']); }
-  return null;
+  if (!d || typeof d !== 'object' || d.area === '') return null;
+  const ai = REGIONS.findIndex(r => r.id === (d.area || 'synapse') && r.ready); if (ai < 0) return null;
+  S.region = ai; S.startFloor = 0;
+  const fl = parseInt(gid() === 'synapse' ? d.floor : d['lv_' + gid()], 10), tf = gid() !== 'tuner' && fl >= 1 && fl <= LV().length ? fl - 1 : null;
+  S.teach = { region: ai, floor: tf };   // enterRegion starts the ladder (and practice) on this level
+  if (gid() === 'synapse' && tf != null) S.startFloor = tf;
+  toast(`Your teacher picked ${REGIONS[ai].game}${tf != null ? `, starting on level ${tf + 1}: ${LV()[tf].name}` : ''}.`, 5000);
+  return new Set(['area', 'floor']);
+}
+// the teacher's area for a test (Sharp or Flat? when the test has none): into that area, then a run
+async function testStart() {
+  const i = S.teach ? S.teach.region : 0;
+  if (S.mode === 'home' || S.region !== i) { S.busy = false; await enterRegion(i); }
+  const t = window.MTGTest && MTGTest.running; if (t) MTGTest.allow = true;   // flying into the area can take longer than the test's start window
+  startRun(); if (t) MTGTest.allow = false;
 }
 
 /* ---------- Tuner: pick an instrument, tune each string by ear (practice only) ---------- */
+// pegs match the real instruments: the outer strings wind on the pegs nearest the nut, so no strings cross
 const INST = {
-  guitar:  { name: 'Guitar',  kind: 'guitar',  strings: [['E2', 82.41], ['A2', 110], ['D3', 146.83], ['G3', 196], ['B3', 246.94], ['E4', 329.63]], pegs: [[86, 28], [86, 56], [86, 84], [154, 84], [154, 56], [154, 28]], nut: 94, bridge: 414, nx: [111, 129], bx: [103, 137] },
-  bass:    { name: 'Bass',    kind: 'bass',    strings: [['E1', 41.2], ['A1', 55], ['D2', 73.42], ['G2', 98]], pegs: [[86, 34], [86, 64], [154, 64], [154, 34]], nut: 84, bridge: 428, nx: [113, 127], bx: [107, 133] },
+  guitar:  { name: 'Guitar',  kind: 'guitar',  strings: [['E2', 82.41], ['A2', 110], ['D3', 146.83], ['G3', 196], ['B3', 246.94], ['E4', 329.63]], pegs: [[86, 84], [86, 56], [86, 28], [154, 28], [154, 56], [154, 84]], nut: 94, bridge: 414, nx: [111, 129], bx: [103, 137] },
+  bass:    { name: 'Bass',    kind: 'bass',    strings: [['E1', 41.2], ['A1', 55], ['D2', 73.42], ['G2', 98]], pegs: [[86, 64], [86, 34], [154, 34], [154, 64]], nut: 84, bridge: 428, nx: [113, 127], bx: [107, 133] },
   ukulele: { name: 'Ukulele', kind: 'ukulele', strings: [['G4', 392], ['C4', 261.63], ['E4', 329.63], ['A4', 440]], pegs: [[88, 96], [88, 62], [152, 62], [152, 96]], nut: 118, bridge: 392, nx: [112, 128], bx: [106, 134] },
-  violin:  { name: 'Violin',  kind: 'violin',  strings: [['G3', 196], ['D4', 293.66], ['A4', 440], ['E5', 659.26]], pegs: [[96, 100], [144, 100], [96, 70], [144, 70]], nut: 120, bridge: 394, nx: [113, 127], bx: [107, 133], sc: 1 },
-  viola:   { name: 'Viola',   kind: 'violin',  strings: [['C3', 130.81], ['G3', 196], ['D4', 293.66], ['A4', 440]], pegs: [[96, 100], [144, 100], [96, 70], [144, 70]], nut: 120, bridge: 408, nx: [113, 127], bx: [106, 134], sc: 1.08 },
-  cello:   { name: 'Cello',   kind: 'violin',  strings: [['C2', 65.41], ['G2', 98], ['D3', 146.83], ['A3', 220]], pegs: [[96, 100], [144, 100], [96, 70], [144, 70]], nut: 120, bridge: 422, nx: [113, 127], bx: [105, 135], sc: 1.12, endpin: true },
+  violin:  { name: 'Violin',  kind: 'violin',  strings: [['G3', 196], ['D4', 293.66], ['A4', 440], ['E5', 659.26]], pegs: [[96, 100], [96, 70], [144, 70], [144, 100]], nut: 120, bridge: 394, nx: [113, 127], bx: [107, 133], sc: 1 },
+  viola:   { name: 'Viola',   kind: 'violin',  strings: [['C3', 130.81], ['G3', 196], ['D4', 293.66], ['A4', 440]], pegs: [[96, 100], [96, 70], [144, 70], [144, 100]], nut: 120, bridge: 408, nx: [113, 127], bx: [106, 134], sc: 1.08 },
+  cello:   { name: 'Cello',   kind: 'violin',  strings: [['C2', 65.41], ['G2', 98], ['D3', 146.83], ['A3', 220]], pegs: [[96, 100], [96, 70], [144, 70], [144, 100]], nut: 120, bridge: 422, nx: [113, 127], bx: [105, 135], sc: 1.12, endpin: true },
 };
 const TN = { id: 'guitar', strs: [], sel: -1, tol: 4, fine: false, fails: 0, show: false, done: {} };
 const centsRatio = c => Math.pow(2, c / 1200);
@@ -2346,9 +2413,13 @@ addEventListener('keydown', e => {
   else if (inGame && (e.key === 'r' || e.key === 'R') && S.mode === 'practice') replay();
 });
 function initApp() {
-  S.mode = 'home'; updateWho(); refreshClass(); drawHome(); pullProg();
-  if (reduceMotion) { Web.setU(1); show('home'); return; }
-  show(null); Web.setU(0, 0); Web.go('macro', { dur: 2.4 }).then(() => { if (S.mode === 'home') show('home'); });   // the opening shot: zoom out from the neurons to the whole brain
+  S.mode = 'home'; updateWho(); refreshClass();
+  const asg = !(window.MTGTest && MTGTest.active) && applySettingsFromUrl();   // an assignment link (?settings=) opens the teacher's area
+  if (!asg) { const f = (new URLSearchParams(location.search).get('focus') || '').split(' · ')[0], fi = REGIONS.findIndex(r => r.ready && (r.game === f || r.id === f)); if (fi >= 0) { S.region = fi; S.teach = { region: fi, floor: null }; } }   // ?focus=<area name> (or 'Area · skill' from the home page)
+  const into = () => { if (S.teach && S.mode === 'home') enterRegion(S.teach.region); };
+  drawHome(); pullProg();
+  if (reduceMotion) { Web.setU(1); show('home'); into(); return; }
+  show(null); Web.setU(0, 0); Web.go('macro', { dur: 2.4 }).then(() => { if (S.mode === 'home') { show('home'); into(); } });   // the opening shot: zoom out from the neurons to the whole brain
 }
 function afterWho() { updateWho(); progCache = null; drawHome(); pullProg(); }
 /* the Brainwaves intro sound (bleeps, low strings on a fifth, the voice-over): plays every time the page opens (his call: "they love it").
@@ -2365,7 +2436,7 @@ playIntro();   // try right away; if the browser says no, the first click or key
 ['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, () => playIntro(), true));
 addEventListener('storage', e => { if (e.key === PROFILE_KEY) afterWho(); });
 /*@@BOOT@@*/
-/* MTG_TEST setup */ MTGTest.setup({ game: 'synapse', hide: ["#who-btn"], apply: () => { applySettingsFromUrl(); }, start: () => { startRun(); } }); /* /MTG_TEST setup */
+/* MTG_TEST setup */ MTGTest.setup({ game: 'synapse', hide: ["#who-btn"], apply: () => { applySettingsFromUrl(); }, start: () => { testStart(); } }); /* /MTG_TEST setup */
 initApp();
 </script>
 <script id="pick-a-voice">
@@ -2883,7 +2954,7 @@ function cAnswer(k) {
 function gameLook() {   // the game screen shows the neuron network for Chord Colors, the two note circles otherwise
   const C = isC(), N = C || isP(); $('cnet-wrap').hidden = !N; document.querySelector('#game .notes').hidden = N; $('b-broken').hidden = !C; $('b-cnext').hidden = true; $('c-snd').hidden = !N; $('ppath').hidden = !isP();
   $('ask').className = 'ask'; $('b-again').disabled = false; $('b-pmine').hidden = $('b-psub').hidden = true; $('b-again').textContent = '🔁 Hear it again';
-  $('iansw').classList.toggle('chords', C); S.cRecent = [];
+  $('iansw').classList.toggle('chords', C); S.cRecent = []; $('game').classList.toggle('prog', isP());
   if (N) $('c-snd').innerHTML = Object.entries(PAV.snd.SOUNDS).map(([k, v]) => `<option value="${k}"${k === PAV.snd.sound ? ' selected' : ''}>${v.name}</option>`).join('');
 }
 $('b-cnext').onclick = () => next();
@@ -3181,7 +3252,8 @@ const SRUN = (() => {
   function play() { const { f1, f2 } = R.cur; tone(f1, .05, NOTE); tone(f2, .05 + NOTE + GAP2, NOTE); T.pulse(); setTimeout(() => T.pulse(), (NOTE + GAP2) * 1000); return .05 + 2 * NOTE + GAP2; }
   function listenThenAnswer() {
     const tok = ++R.tok; R.phase = 'listen'; btns(false);
-    const d = play(); setTimeout(() => { if (tok !== R.tok) return; R.phase = 'answer'; R.t0 = performance.now(); btns(true); }, d * 1000);
+    const d = play(), second = .05 + NOTE + GAP2;   // you can answer as soon as the second note starts; the 4-second clock starts when it ends
+    setTimeout(() => { if (tok !== R.tok) return; R.phase = 'answer'; R.t0 = performance.now() + (d - second) * 1000; btns(true); }, second * 1000);
   }
   function round() {
     say(''); const midi = 57 + rand(13), dir = Math.random() < .5 ? 1 : -1, f1 = 440 * Math.pow(2, (midi - 69) / 12);
@@ -3217,7 +3289,7 @@ const SRUN = (() => {
     Object.assign(R, { cents: first, lives: 3, reps: 2, depth: 0, board: [] }); hud(); say(''); T.reset();
     try {   // the top 10 (your class if you are in one, otherwise the world) appear on the tunnel walls as names to pass
       const p = getProfile(), scope = p && p.classCode ? p.classCode : 'world';
-      fetchBoard(scope).then(rows => { R.board = rows.slice(0, 10).map((r, i) => ({ name: r.name, score: r.score, rank: i + 1 })).sort((a, b) => a.score - b.score); }).catch(() => {});
+      fetchBoard(scope).then(rows => { R.board = rows.slice(0, 10).map((r, i) => ({ name: r.name, score: r.score, rank: i + 1, dev: !!r.dev })).sort((a, b) => a.score - b.score); }).catch(() => {});
     } catch {}
     show(null); Web.lit([S.region], S.region); await Web.go('micro', { floor: S.region, dur: 1.2 });   // into the brain...
     show('srun'); await T.dive(); S.busy = false;   // ...and down the fiber: you are the signal
@@ -3225,53 +3297,77 @@ const SRUN = (() => {
   }
   function quit() { if (S.mode !== 'srun' || S.busy) return; if (S.rounds > 0) finish(true); else { R.tok++; R.phase = 'idle'; backToLadder(); } }
   $('sr-sharp').onclick = () => answer(1); $('sr-flat').onclick = () => answer(-1);
+  $('sr-sharp').onpointerdown = () => answer(1); $('sr-flat').onpointerdown = () => answer(-1);   // count the press itself, not the release
+  addEventListener('keyup', e => { if (e.code === 'Space' && S.mode === 'srun' && !$('srun').hidden) e.preventDefault(); }, true);   // Space never 'clicks' a focused Sharp/Flat button
   $('sr-rep').onclick = () => { if (R.phase !== 'answer' || R.reps <= 0) return; R.reps--; hud(); listenThenAnswer(); };
   $('sr-exit').onclick = quit;
+  // Visuals on/off: off draws no tunnel at all (just a timer bar), for slow school computers. Remembered on this computer.
+  const fxKey = 'bw_srun_fx_v1', fxBtn = $('sr-fx');
+  let fxOn = true; try { fxOn = localStorage.getItem(fxKey) !== 'off'; } catch {}
+  const fxShow = () => { fxBtn.textContent = fxOn ? '🎨 Visuals: On' : '🎨 Visuals: Off'; fxBtn.setAttribute('aria-pressed', String(fxOn)); };
+  const fxToggle = () => { fxOn = !fxOn; try { localStorage.setItem(fxKey, fxOn ? 'on' : 'off'); } catch {} fxShow(); fxBtn.blur(); };
+  fxBtn.onclick = fxToggle; fxShow();
   addEventListener('keydown', e => {
     if (S.mode !== 'srun' || $('srun').hidden || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'ArrowUp') { e.preventDefault(); answer(1); } else if (e.key === 'ArrowDown') { e.preventDefault(); answer(-1); }
-    else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); $('sr-rep').click(); }
+    else if (e.key === 'r' || e.key === 'R' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) $('sr-rep').click(); }   // Space or R: hear the two notes again
+    else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); fxToggle(); }
   });
 
   /* ---------- the tunnel: first person down a glowing nerve fiber ---------- */
   const T = (() => {
     const cv = $('sr-cv'), cx = cv.getContext('2d'); let W = 0, H = 0, depthZ = 0, speed = 1.2, target = 1.2, last = performance.now(), shake = 0, red = 0, light = 0, gateZ = null, gateLit = 0, dive = 0, diveRes = null, pulses = [];
-    let sign = null, shards = [], broken = 0, passedAt = 0, fall = 0;   // fall: the whole tunnel collapsing after the last life   // sign: the next leaderboard name on the wall; shards: pieces of wall falling away after a lost life
+    let signs = [], shards = [], broken = 0, fall = 0;   // fall: the whole tunnel collapsing after the last life   // sign: the next leaderboard name on the wall; shards: pieces of wall falling away after a lost life
     const FIB = 26, fib = Array.from({ length: FIB }, (_, i) => ({ a: i / FIB * Math.PI * 2 + Math.random() * .1, r: .82 + Math.random() * .16, w: .6 + Math.random() * 1.2 }));
     const dust = Array.from({ length: 160 }, () => ({ a: Math.random() * 6.28, r: Math.random() * .85, z: Math.random() * 30 }));
-    function size() { const r = devicePixelRatio || 1; W = cv.clientWidth; H = cv.clientHeight; cv.width = W * r; cv.height = H * r; }
+    // Lite: slow computers (few cores, or frames running slow) get a lighter tunnel: 1x resolution, half the rings, fewer streaks, no glow blur
+    let lite = (navigator.hardwareConcurrency || 8) <= 4, slowAvg = 0;
+    let PR = 1;   // the canvas's pixel ratio (set in size)
+    function size() { const r = PR = lite ? 1 : Math.min(devicePixelRatio || 1, 1.5); W = cv.clientWidth; H = cv.clientHeight; cv.width = W * r; cv.height = H * r; }
     const hue = () => { const g = R.depth; return g < 8 ? 200 - g * 7.5 : g < 16 ? 140 - (g - 8) * 12 : g < 26 ? 405 - (g - 16) * 7.5 : 320; };   // blue, green, gold, hot pink as you go deeper
     const bend = z => [Math.sin(z * .11) * .35 + Math.sin(z * .047) * .25, Math.cos(z * .09) * .22];   // the fiber curves gently
     function proj(a, r, z) { const zz = Math.max(.05, z - depthZ), [bx, by] = bend(z), [cbx, cby] = bend(depthZ + .5), f = Math.min(W, H) * .62 / zz; return [W / 2 + (Math.cos(a) * r + bx - cbx) * f, H / 2 + (Math.sin(a) * r * .86 + by - cby) * f, zz]; }
     function frame(now) {
-      requestAnimationFrame(frame); const dt = Math.min(.05, (now - last) / 1000); last = now;
+      requestAnimationFrame(frame); const raw = now - last, dt = Math.min(.05, raw / 1000); last = now;
       if ($('srun').hidden) return;
+      if (R.phase === 'answer' && raw > 120) R.t0 += raw - 17;   // a frozen moment doesn't eat into the 4 seconds
+      if (!fxOn) {   // Visuals off: a plain dark screen and a timer bar, nothing else to draw
+        if (dive > 0) { dive = 0; target = 1.2; diveRes && diveRes(); }   // skip the dive into the tunnel
+        if (W !== cv.clientWidth || H !== cv.clientHeight) size();
+        cx.setTransform(PR, 0, 0, PR, 0, 0); cx.globalCompositeOperation = 'source-over'; cx.fillStyle = '#03050c'; cx.fillRect(0, 0, W, H);
+        if (R.phase === 'answer') { const tl = Math.min(1, Math.max(0, 1 - (performance.now() - R.t0) / LIMIT_MS)), bw = Math.min(W * .6, 520) * tl;
+          cx.fillStyle = `hsl(${hue() % 360} 90% 65%)`; cx.fillRect(W / 2 - bw / 2, H * .5 - 3, bw, 6); }
+        if (R.phase === 'answer' && performance.now() - R.t0 > LIMIT_MS) answer(0);   // time ran out
+        return;
+      }
+      if (!lite && raw < 1000) { slowAvg += ((raw > 30 ? 1 : 0) - slowAvg) * .03; if (slowAvg > .5) { lite = true; size(); } }
       if (W !== cv.clientWidth || H !== cv.clientHeight) size();
       speed += (target - speed) * Math.min(1, dt * 3);
       if (dive > 0) { dive = Math.max(0, dive - dt / 1.6); speed = 2 + (1 - Math.abs(dive * 2 - 1)) * 40; if (dive === 0) { target = 1.2; diveRes && diveRes(); } }
       depthZ += speed * dt; broken = fall > 0 ? Math.min(1.25, broken + dt * .5) : Math.max(0, broken - dt * .45); if (fall > 0) fall += dt; red *= Math.exp(-dt * 3); light *= Math.exp(-dt * 2.2); gateLit *= Math.exp(-dt * .6); shake *= Math.exp(-dt * 6);
       const h = reduceMotion ? 200 : hue(); $('srun').style.setProperty('--sr-hue', Math.round(h % 360));
-      const pr = devicePixelRatio || 1, sx = (Math.random() - .5) * shake, sy = (Math.random() - .5) * shake; cx.setTransform(pr, 0, 0, pr, sx * pr, sy * pr);
+      const pr = PR, sx = (Math.random() - .5) * shake, sy = (Math.random() - .5) * shake; cx.setTransform(pr, 0, 0, pr, sx * pr, sy * pr);
       cx.fillStyle = '#03050c'; cx.fillRect(-20, -20, W + 40, H + 40);
       const g0 = cx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * .6); g0.addColorStop(0, `hsla(${h},90%,55%,${.18 + light * .35})`); g0.addColorStop(1, 'transparent'); cx.fillStyle = g0; cx.fillRect(0, 0, W, H);
       cx.globalCompositeOperation = 'lighter';
       const z0 = Math.floor(depthZ);
-      for (let k = 60; k >= 1; k--) {   // the walls of the fiber rushing past
-        const z = z0 + k * .5, zz = z - depthZ; if (zz < .2) continue; const pts = [];
-        for (let i = 0; i <= 48; i++) { const a = i / 48 * 6.28; pts.push(proj(a, 1 + Math.sin(a * 5 + z * 1.3) * .03, z)); }
+      const RINGS = lite ? 30 : 60, SEG = lite ? 24 : 48;
+      for (let k = RINGS; k >= 1; k--) {   // the walls of the fiber rushing past
+        const z = z0 + k * 30 / RINGS, zz = z - depthZ; if (zz < .2) continue; const pts = [];
+        for (let i = 0; i <= SEG; i++) { const a = i / SEG * 6.28; pts.push(proj(a, 1 + Math.sin(a * 5 + z * 1.3) * .03, z)); }
         const al = Math.max(0, Math.min(1, (1 - zz / 30))) * (.28 + light * .4), hh = h + (Math.round(z * 2) % 3) * 8, gone = i => broken > 0 && zz < 9 && ((i * 7 + Math.round(z * 4) * 13) % 10) / 10 < broken * .8;   // after a lost life, nearby walls have holes
         cx.beginPath(); pts.forEach((p, i) => (i && !gone(i) ? cx.lineTo(p[0], p[1]) : cx.moveTo(p[0], p[1])));
-        cx.strokeStyle = `hsla(${hh},95%,${55 + light * 25}%,${al * .35})`; cx.lineWidth = Math.max(1, 9 / zz); cx.stroke();
+        if (!lite) { cx.strokeStyle = `hsla(${hh},95%,${55 + light * 25}%,${al * .35})`; cx.lineWidth = Math.max(1, 9 / zz); cx.stroke(); }
         cx.strokeStyle = `hsla(${hh},95%,${62 + light * 25}%,${al})`; cx.lineWidth = Math.max(.5, 2.2 / zz * 2.4); cx.stroke();
       }
-      fib.forEach(fb => { cx.strokeStyle = `hsla(${h + 30},90%,72%,${.26 + light * .35})`; cx.lineWidth = fb.w; cx.beginPath(); for (let z = depthZ + 30; z > depthZ + .3; z -= .6) { const p = proj(fb.a, fb.r, z); z > depthZ + 29.5 ? cx.moveTo(p[0], p[1]) : cx.lineTo(p[0], p[1]); } cx.stroke(); });
-      dust.forEach(d => { let z = d.z; while (z < depthZ + .3) z += 30; d.z = z; const p = proj(d.a, d.r, z), q = proj(d.a, d.r, z + .15 + speed * .12); cx.strokeStyle = `hsla(${h - 20},100%,82%,${Math.min(1, 1.2 - p[2] / 30)})`; cx.lineWidth = Math.max(.6, 3 / p[2]); cx.beginPath(); cx.moveTo(q[0], q[1]); cx.lineTo(p[0], p[1]); cx.stroke(); });
+      fib.forEach((fb, n) => { if (lite && n % 2) return; cx.strokeStyle = `hsla(${h + 30},90%,72%,${.26 + light * .35})`; cx.lineWidth = fb.w; cx.beginPath(); for (let z = depthZ + 30; z > depthZ + .3; z -= lite ? 1.5 : .6) { const p = proj(fb.a, fb.r, z); z > depthZ + 29.5 ? cx.moveTo(p[0], p[1]) : cx.lineTo(p[0], p[1]); } cx.stroke(); });
+      dust.forEach((d, n) => { if (lite && n % 3) return; let z = d.z; while (z < depthZ + .3) z += 30; d.z = z; const p = proj(d.a, d.r, z), q = proj(d.a, d.r, z + .15 + speed * .12); cx.strokeStyle = `hsla(${h - 20},100%,82%,${Math.min(1, 1.2 - p[2] / 30)})`; cx.lineWidth = Math.max(.6, 3 / p[2]); cx.beginPath(); cx.moveTo(q[0], q[1]); cx.lineTo(p[0], p[1]); cx.stroke(); });
       if (gateZ != null) {   // this question's gate: dim while you listen, it lights up when you are right and you fly through it
         const zz = gateZ - depthZ;
         if (zz < .2) gateZ = null;
         else {
           const pts = []; for (let i = 0; i <= 60; i++) pts.push(proj(i / 60 * 6.28, .95, gateZ));
-          const lit = gateLit, tl = R.phase === 'answer' ? Math.max(0, 1 - (performance.now() - R.t0) / LIMIT_MS) : 1;
+          const lit = gateLit, tl = R.phase === 'answer' ? Math.min(1, Math.max(0, 1 - (performance.now() - R.t0) / LIMIT_MS)) : 1;
           cx.lineWidth = Math.max(2, 10 / zz * (1 + lit)); cx.strokeStyle = lit > .05 ? `hsla(${h},100%,${70 + lit * 25}%,${.6 + lit * .4})` : `hsla(${h},60%,70%,.35)`;
           cx.beginPath(); pts.forEach((p, i) => (i ? cx.lineTo(p[0], p[1]) : cx.moveTo(p[0], p[1]))); cx.stroke();
           if (R.phase === 'answer') {   // the timer drains around the gate
@@ -3293,35 +3389,49 @@ const SRUN = (() => {
       if (fall > 0) { cx.fillStyle = `rgba(3,5,12,${Math.min(.92, Math.max(0, fall - .6) / 2)})`; cx.fillRect(0, 0, W, H); }   // the lights go out
       if (R.phase === 'answer' && performance.now() - R.t0 > LIMIT_MS) answer(0);   // time ran out
     }
-    // the next leaderboard name, glowing on the tunnel wall. It gets closer as your score climbs; when you beat it you fly past it.
+    // the top 10 names are painted on the tunnel ceiling, small in the distance. Each one sits as far ahead as the answers
+    // you still need to beat it, so it creeps closer as your score climbs; when you beat it the plate stays put on the wall and you fly past it.
     function drawSign(h, dt) {
-      const next = (R.board || []).find(r => r.score > S.score);
-      if (!sign && next) sign = { r: next, z: depthZ + 14, from: S.score, pass: false };
-      if (!sign) return;
-      if (!sign.pass && S.score >= sign.r.score) { sign.pass = true; passedAt = performance.now(); const pa = $('sr-pass'); pa.innerHTML = `Passed #${sign.r.rank} ${esc(sign.r.name)}!`; pa.style.opacity = 1; setTimeout(() => { pa.style.opacity = 0; }, 1600); light = 1; }   // the tunnel flares as you pass a name
-      if (sign.pass) sign.z -= dt * 26; else { const left = Math.max(0, Math.min(1, (sign.r.score - S.score) / Math.max(1, sign.r.score - sign.from))), want = depthZ + 2 + 7 * left; sign.z += (want - sign.z) * Math.min(1, dt * 1.6); }
-      const zz = sign.z - depthZ; if (zz < .4) { sign = null; return; }
-      const label = `#${sign.r.rank}  ${sign.r.name.toUpperCase()}  ·  ${sign.r.score.toLocaleString()}`, fpx = Math.min(W, H) * .62 / zz * .42, al = Math.max(0, Math.min(1, (14 - zz) / 4)) * (sign.pass ? 1 : .95);
-      if (fpx < 3) return;
-      [[-Math.PI / 2, Math.PI / 2], [Math.PI / 2, -Math.PI / 2]].forEach(([a, rot], n) => {   // woven into the wall above and below you
-        const p = proj(a, .9, sign.z); cx.save(); cx.translate(p[0], p[1]); cx.rotate(rot + a);   // both copies read the right way up cx.globalAlpha = al;
-        cx.font = `900 ${fpx}px Orbitron, Inter, sans-serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-        { const w = cx.measureText(label).width + fpx * 1.4, hh = fpx * 1.7; cx.globalCompositeOperation = 'source-over'; cx.fillStyle = 'rgba(3,5,12,.82)'; cx.strokeStyle = sign.pass ? '#fff' : `hsl(${h % 360} 100% 65%)`; cx.lineWidth = Math.max(1, fpx * .12);
-          cx.beginPath(); cx.roundRect(-w / 2, -hh / 2, w, hh, hh / 2); cx.fill(); cx.shadowColor = cx.strokeStyle; cx.shadowBlur = 14; cx.stroke(); cx.globalCompositeOperation = 'lighter'; }   // a dark plate so the name stands out from the glow
-        cx.shadowColor = sign.pass ? '#fff' : `hsl(${h % 360} 100% 65%)`; cx.shadowBlur = 18; cx.fillStyle = sign.pass ? '#fff' : `hsl(${h % 360} 100% 85%)`; cx.fillText(label, 0, 0); cx.restore();
+      const step = Math.max(1, 100 * START / Math.max(MIN, R.cents));   // about what the next right answer is worth
+      for (const r of R.board || []) {
+        let sg = signs.find(x => x.r === r);
+        if (r.score <= S.score) {   // beaten: it is fixed to the wall now and slides past
+          if (sg && !sg.pass) { sg.pass = true; sg.z = Math.min(sg.z, depthZ + 3.2); const pa = $('sr-pass'); pa.innerHTML = `Passed #${r.rank} ${esc(r.name)}!`; pa.style.opacity = 1; setTimeout(() => { pa.style.opacity = 0; }, 1600); light = 1; }
+          continue;
+        }
+        const want = depthZ + 3.4 + 3.2 * (r.score - S.score) / step;
+        if (want > depthZ + 30) { if (sg) sg.z = want; continue; }
+        if (!sg) signs.push(sg = { r, z: want, pass: false });
+        sg.z += (want - sg.z) * Math.min(1, dt * 1.4);
+      }
+      signs = signs.filter(sg => sg.z - depthZ > .45 && (sg.pass || sg.z - depthZ < 31));
+      [...signs].sort((x, y) => y.z - x.z).forEach(sg => {   // far ones first, so near ones draw on top
+        const zz = sg.z - depthZ, al = Math.max(0, Math.min(1, (30 - zz) / 7)), col = sg.pass ? '#fff' : `hsl(${h % 360} 100% 70%)`;
+        if (zz > 30) return;
+        const label = `#${sg.r.rank}  ${sg.r.name.toUpperCase()}${sg.r.dev ? '  [DEV]' : ''}  ${sg.r.score.toLocaleString()}`, F = 100;
+        cx.font = `900 ${F}px Orbitron, Inter, sans-serif`; const tw = cx.measureText(label).width + F * 1.2, th = F * 1.5;
+        { const a = -Math.PI / 2;   // on the ceiling
+          const c = proj(a, .98, sg.z), px = proj(a + .02, .98, sg.z), pz = proj(a, .98, sg.z + .02);
+          const ux = [(px[0] - c[0]) / .02, (px[1] - c[1]) / .02], uz = [(pz[0] - c[0]) / .02, (pz[1] - c[1]) / .02];
+          const sa = Math.min(.0016, 1.7 / tw) * (ux[0] < 0 ? -1 : 1), sz = .0065 * (uz[1] > 0 ? 1 : -1);   // world size per text pixel (big enough to read a step before you pass it); flips keep it readable
+          const fpx = Math.abs(uz[1] * sz) * F; if (fpx < 1.2) return;   // too far to see yet
+          cx.save(); cx.globalAlpha = al; cx.transform(ux[0] * sa, ux[1] * sa, uz[0] * sz, uz[1] * sz, c[0], c[1]);
+          cx.globalCompositeOperation = 'source-over'; cx.fillStyle = 'rgba(3,5,12,.78)'; cx.strokeStyle = col; cx.lineWidth = F * .08;
+          cx.beginPath(); cx.roundRect(-tw / 2, -th / 2, tw, th, th / 2); cx.fill(); cx.stroke();
+          cx.globalCompositeOperation = 'lighter'; cx.shadowColor = col; cx.shadowBlur = lite ? 0 : Math.min(14, fpx * .8);
+          cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillStyle = sg.pass ? '#fff' : `hsl(${h % 360} 100% 86%)`; cx.fillText(label, 0, F * .04); cx.restore();
+        }
       });
-      // a glowing band of wall around the name
-      cx.globalAlpha = al * .5; cx.strokeStyle = `hsla(${h % 360},100%,75%,.8)`; cx.lineWidth = Math.max(1, 6 / zz); cx.beginPath();
-      for (let i = 0; i <= 48; i++) { const p = proj(i / 48 * 6.28, .97, sign.z); i ? cx.lineTo(p[0], p[1]) : cx.moveTo(p[0], p[1]); } cx.stroke(); cx.globalAlpha = 1;
+      cx.globalAlpha = 1;
     }
     requestAnimationFrame(frame);
     return {
-      reset() { sign = null; shards = []; broken = 0; fall = 0; target = 1.2; },
+      reset() { signs = []; shards = []; broken = 0; fall = 0; target = 1.2; },
       gate() { gateZ = depthZ + 9; gateLit = 0; target = 1.2; },
       pulse() { pulses.push({ t: 0 }); light = Math.max(light, .35); },
       boost() { gateLit = 1; light = 1; target = reduceMotion ? 2 : 7; shake = reduceMotion ? 0 : 4; setTimeout(() => { target = 1.4 + R.depth * .05; }, 1100); const fl = $('sr-flash'); fl.style.background = `radial-gradient(circle,hsla(${hue() % 360},100%,80%,.45),transparent 60%)`; fl.style.opacity = 1; setTimeout(() => { fl.style.opacity = 0; }, 120); },
       collapse() {   // the last life: everything breaks apart and falls, and the ride grinds to a stop
-        red = 1; shake = reduceMotion ? 0 : 26; target = 0; sign = null; if (reduceMotion) return; fall = .001; broken = 1; const h = hue() % 360;
+        red = 1; shake = reduceMotion ? 0 : 26; target = 0; signs = []; if (reduceMotion) return; fall = .001; broken = 1; const h = hue() % 360;
         for (let k = 0; k < 340; k++) {
           const a = Math.random() * 6.28, z = depthZ + .6 + Math.random() * 9, p = proj(a, 1, z), dx = p[0] - W / 2, dy = p[1] - H / 2, d = Math.hypot(dx, dy) || 1, sz = 10 + Math.random() * 46 / Math.max(.5, p[2]);
           shards.push({ x: p[0], y: p[1], vx: dx / d * (60 + Math.random() * 380) + (Math.random() - .5) * 120, vy: dy / d * (60 + Math.random() * 300) - 60 - Math.random() * 160, rot: Math.random() * 6.28, vr: (Math.random() - .5) * 9, t: -Math.random() * .7, life: 2.2 + Math.random() * 1.2, hu: Math.random() < .3 ? 350 : h,
@@ -3344,6 +3454,99 @@ const SRUN = (() => {
   return { start, quit, depth: () => R.depth, _R: R };
 })();
 </script>
+<!-- MTG_ASSIGN start: identical in every game, only data-game changes. Master copy: Music Games/shared/mtg-assign.snippet.html (install with shared/apply-assign.py). -->
+<!-- "Assignment complete": when a signed-in student reaches the goal of their teacher's assignment in this game, a card pops up
+     (Back to home / Keep practicing), so nobody does 80 when 40 was asked. It counts exactly like the home page's "From your teacher"
+     card: the assignment cached by the home page (localStorage mtg_assign_v1:<sid>) and the practice history (mtg_hist_v1:<sid>),
+     answers (or minutes) in this game from the assignment's start to end day. It shows once per assignment task, and only when the
+     goal is reached while this page is open. No Firestore reads. -->
+<style>
+  #mtg-asg-done { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; padding: 16px; background: rgba(4, 8, 18, .72); backdrop-filter: blur(3px); font: 16px/1.4 Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  #mtg-asg-done .card { max-width: 420px; width: 100%; text-align: center; background: #101a33; color: #f2f5ff; border: 2px solid #2fbf71; border-radius: 20px; padding: 26px 22px 20px; box-shadow: 0 0 0 6px rgba(47, 191, 113, .15), 0 20px 60px rgba(0, 0, 0, .5); animation: mtgAsgPop .45s cubic-bezier(.2, 1.5, .4, 1) both; }
+  #mtg-asg-done .big { font-size: 46px; line-height: 1; }
+  #mtg-asg-done h2 { margin: 10px 0 6px; font-size: 24px; }
+  #mtg-asg-done p { margin: 0 0 18px; color: #c7d2ee; }
+  #mtg-asg-done .row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  #mtg-asg-done a, #mtg-asg-done button { font: 700 15px/1 inherit; font-family: inherit; padding: 12px 18px; border-radius: 999px; cursor: pointer; text-decoration: none; }
+  #mtg-asg-done a { background: #2fbf71; color: #06210f; border: 0; }
+  #mtg-asg-done button { background: transparent; color: #f2f5ff; border: 1px solid #3a4a78; }
+  @keyframes mtgAsgPop { from { transform: scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { #mtg-asg-done .card { animation: none; } }
+</style>
+<script id="mtg-assign" data-game="brainwaves">
+(function () {
+  var GAME = document.currentScript.getAttribute('data-game'), HOME = 'https://drkeyzzz.github.io/';
+  var NAMES = { scale: 'Scale Quest', tidal: 'Tidal Tones', rooftop: 'Rooftop Runner', rhythm: 'The Big Score', earshot: 'Earshot Saloon', brainwaves: 'Brainwaves', listen: 'Critical Listening Lab' };
+  // Brainwaves saves each brain area under its own id; it counts as one game, and its skills are the area names (like the home page's foldBrainwaves)
+  var BW = { synapse: 'Sharp or Flat?', intervals: 'Intervals', chords: 'Chord Colors', progressions: 'Progressions', scales: 'Scales and modes', voice: 'Pick a Voice', tuner: 'Tuner' };
+  function gameDay(day) {
+    if (GAME !== 'brainwaves') return day[GAME];
+    var b = null;
+    Object.keys(BW).forEach(function (id) {
+      var x = day[id]; if (!x) return; b = b || { answers: 0, ms: 0, skills: {} };
+      b.answers += x.answers || 0; b.ms += x.ms || 0; b.skills[BW[id]] = [x.correct || 0, x.answers || 0];
+    });
+    return b;
+  }
+  function load(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function prof() { try { if (sessionStorage.getItem('music_guest') === '1') return null; } catch (e) {} var p = load('rdt_profile_v1'); return p && p.first && p.init ? p : null; }
+  function sidOf(p) { return (p.first + p.init).toLowerCase().replace(/[^a-z]/g, ''); }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function today() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function skills(t) { return t.skills && t.skills.length ? t.skills : t.skill ? [t.skill] : []; }
+  // the same count as the home page's assignDone(), for this game only
+  function count(days, a, t) {
+    var n = 0, sk = skills(t);
+    Object.keys(days).forEach(function (d) {
+      if (d < a.start || d > a.end) return;
+      var g = gameDay(days[d]); if (!g) return;
+      if (t.unit === 'minutes') n += g.ms || 0;
+      else if (sk.length) sk.forEach(function (k) { n += ((g.skills || {})[k] || [0, 0])[1]; });
+      else n += g.answers || 0;
+    });
+    return t.unit === 'minutes' ? Math.floor(n / 60000) : n;
+  }
+  // every task for this game in the student's active class (the one picked on the home page) that is open today: [{key, t, a, n}]
+  function tasks() {
+    var p = prof(); if (!p) return [];
+    var sid = sidOf(p), by = load('mtg_assign_v1:' + sid) || {}, h = load('mtg_hist_v1:' + sid), days = h && h.days ? h.days : {}, d = today(), out = [];
+    Object.keys(by).forEach(function (code) {
+      if (code !== p.classCode) return;   // other saved classes wait until the student switches to them
+      var a = by[code]; if (!a || !Array.isArray(a.tasks) || a.start > d || a.end < d) return;
+      a.tasks.forEach(function (t, i) {
+        if (!t || t.game !== GAME || !(Number(t.goal) > 0)) return;
+        out.push({ key: sid + '|' + code + '|' + a.start + '|' + a.end + '|' + i + '|' + t.goal, t: t, a: a, n: count(days, a, t) });
+      });
+    });
+    return out;
+  }
+  var below = {}, shown = {};
+  function show(x) {
+    if (document.getElementById('mtg-asg-done')) return;
+    var t = x.t, keys = t.settings && Array.isArray(t.settings.keys) ? t.settings.keys.slice(0, 6).join(', ') : skills(t).join(', ');
+    var what = (NAMES[GAME] || 'this game') + (keys ? ': ' + keys : ''), unit = t.unit === 'minutes' ? 'minutes' : 'answers';
+    var el = document.createElement('div'); el.id = 'mtg-asg-done'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-labelledby', 'mtg-asg-h');
+    el.innerHTML = '<div class="card"><div class="big" aria-hidden="true">✅</div><h2 id="mtg-asg-h">Assignment complete!</h2>'
+      + '<p>You did ' + Math.min(x.n, 9999) + ' of ' + t.goal + ' ' + unit + ' in ' + what.replace(/[<>&]/g, '') + '. Your teacher can see it.</p>'
+      + '<div class="row"><a href="' + HOME + '">Back to home</a><button type="button">Keep practicing</button></div></div>';
+    var close = function () { el.remove(); removeEventListener('keydown', keys2, true); };
+    var keys2 = function (e) { if (e.key === 'Escape') { e.preventDefault(); close(); } else if (e.key !== 'Tab' && e.key !== 'Enter' && e.key !== ' ') { e.stopPropagation(); e.preventDefault(); } };
+    el.querySelector('button').onclick = close;
+    addEventListener('keydown', keys2, true);   // the game underneath doesn't get the keys while the card is up
+    document.body.appendChild(el); el.querySelector('a').focus();
+  }
+  function check() {
+    tasks().forEach(function (x) {
+      if (shown[x.key]) return;
+      if (x.n < x.t.goal) { below[x.key] = true; return; }
+      shown[x.key] = true;
+      if (below[x.key]) show(x);   // reached while this page was open (not an assignment finished earlier)
+    });
+  }
+  check(); setInterval(check, 1500);
+})();
+</script>
+<!-- MTG_ASSIGN end -->
 <!-- MTG_TIME start: identical in every game, only data-mount / data-place change. Master copy: Music Games/shared/mtg-time.snippet.html -->
 <script id="mtg-time" data-mount=".mtg-home" data-place="append">
 /* Practice time box (added 2026-10-16). Shows "Today: N min" (every game added together) and "All time" with a
